@@ -1,8 +1,16 @@
 // A conversation: its newest 15 messages, older ones on request (at most
-// MAX in memory), and a Reply button after the newest. Opening it
+// MAX in memory, WINDOW of them on the page at once), and a Reply button
+// after the newest. Opening it
 // marks the chat read; it follows new messages and receipts while open.
 // A chat opened lately shows its kept messages at once (utils/msgcache.js)
 // while the newest load.
+//
+// Every message is a handful of widgets, hundreds in all, too many to make
+// again for each receipt or new message without the watch stalling: a draw
+// keeps the messages drawn already up to the first that changed, and makes
+// only the rest (see render). And the page scrolls slower the more widgets
+// it has, so it shows WINDOW messages at most: going further back leaves
+// the newest out, and a button at the end brings them back.
 
 import { BasePage } from '@zeppos/zml/base-page'
 import { scrollTo } from '@zos/page'
@@ -17,6 +25,17 @@ import { C, Canvas, H, L, W, avatarColor, errorView, measure, textWidth } from '
 
 // MAX is how many messages the page keeps; older ones can't be loaded past it.
 const MAX = 45
+// New messages go past MAX up to KEEP; then the oldest go, TRIM at once,
+// since dropping the first message means drawing them all again.
+const KEEP = MAX + 15
+const TRIM = 10
+// WINDOW is how many messages the page shows at once, STEP how many
+// "Earlier messages" and "Newer messages" move it by when they're loaded.
+const WINDOW = 30
+const STEP = 15
+// New messages coming in add to the page up to SLACK past WINDOW before
+// its first ones go, since that means drawing them all again.
+const SLACK = 6
 
 const TICKS = { '!': '!', p: '•', s: '✓', d: '✓✓', r: '✓✓' }
 const RANK = { '!': 0, p: 1, s: 2, d: 3, r: 4 }
@@ -41,6 +60,14 @@ Page(
       this.loading = true
       this.err = null
       this.stop = null
+      this.head = '' // what the canvas holds above the messages, see render
+      this.drawn = [] // the messages drawn: { sig, mark, end }
+      this.tail = 0 // the canvas's mark after the last message
+      this.tailKey = '' // what's drawn after the last message
+      this.back = 0 // the newest messages left out of the page
+      this.start = 0 // the first message on the page
+      this.firstId = '' // and its ID
+      this.height = 0 // how tall the page is
       const c = cached(p.i)
       if (c) {
         this.msgs = c.msgs
@@ -111,19 +138,43 @@ Page(
       )
     },
 
+    // up moves the page n messages further back, as far as there are.
+    up(n) {
+      this.back = Math.min(this.back + n, Math.max(0, this.msgs.length - WINDOW))
+      this.render(false)
+      scrollTo({ y: 0 })
+    },
+
+    // older shows earlier messages: kept ones left out of the page, or
+    // more from the computer.
     older() {
+      if (this.start > 0) {
+        this.up(STEP)
+        return
+      }
       const first = this.msgs[0]
       if (!first) return
       ask(this, 'msgs', { chat: this.p.i, before: first.i })
         .then((d) => {
-          if (d.err) return
+          if (d.err || this.gone) return
           this.msgs = d.m.concat(this.msgs)
           this.more = !!d.more
           this.remember()
-          this.render(false)
-          scrollTo({ y: 0 })
+          this.up(d.m.length)
         })
         .catch(() => {})
+    },
+
+    // newer brings back newer messages left out of the page, with the last
+    // one shown before at the top.
+    newer() {
+      const last = this.msgs[this.msgs.length - this.back - 1]
+      this.back = Math.max(0, this.back - STEP)
+      this.render(false)
+      const i = this.msgs.indexOf(last) - this.start
+      if (i < 0 || i >= this.drawn.length) return
+      const top = i ? this.drawn[i - 1].end : this.top
+      scrollTo({ y: -Math.min(Math.max(0, top - L.top), Math.max(0, this.height - H)) })
     },
 
     // whole loads all of a message whose text was cut.
@@ -150,8 +201,9 @@ Page(
             this.msgs[i] = e.m
           } else {
             this.msgs.push(e.m)
-            if (this.msgs.length > MAX + 15) this.msgs.shift()
-            arrived = true
+            if (this.msgs.length > KEEP) this.msgs.splice(0, TRIM)
+            if (this.back) this.back++ // the page stays where it is
+            else arrived = true
             if (!e.m.o) this.markRead()
           }
           changed = true
@@ -232,37 +284,64 @@ Page(
       push({ url: 'page/photo/index.page', params: JSON.stringify({ c: this.p.i, i: m.i, k: m.p, n: this.p.n }) })
     },
 
+    // headKey says what goes above the messages, or instead of them.
+    headKey() {
+      if (this.loading) return 'loading'
+      if (this.err && !this.msgs.length) return 'error ' + this.err.code + ' ' + this.err.msg
+      return 'list' + (this.earlier() ? ' more' : '') + (this.msgs.length ? '' : ' empty')
+    },
+
+    // earlier says whether there are earlier messages to show.
+    earlier() {
+      return this.start > 0 || (this.more && this.msgs.length < MAX)
+    },
+
+    // render draws the page. When what's above the messages is the same,
+    // the messages that haven't changed since the last draw, up to the
+    // first that has, stay as they are.
     render(toBottom) {
       const cv = this.cv
-      cv.clear()
-      cv.title(this.p.n || 'Chat')
-      if (this.loading) {
-        cv.text({ x: 0, y: Math.floor(H / 2) - px(20), w: W, h: px(40), text: 'Loading…', size: px(22), color: C.sub, align: align.CENTER_H })
-        return
-      }
-      if (this.err && !this.msgs.length) {
-        const v = errorView(this.err.code, this.err.msg)
-        cv.message({ title: v.title, titleColor: C.warn, body: v.body, action: 'Try again', click: () => {
-          this.loading = true
-          this.render(false)
-          this.load()
-        } })
-        return
+      // The messages on the page: WINDOW at most, the newest back left out.
+      this.back = Math.min(this.back, Math.max(0, this.msgs.length - WINDOW))
+      const end = this.msgs.length - this.back
+      let start = Math.max(0, end - WINDOW)
+      const was = this.firstId ? this.msgs.findIndex((m) => m.i === this.firstId) : -1
+      if (was >= 0 && was < start && end - was <= WINDOW + SLACK) start = was
+      this.start = start
+      this.firstId = start < end ? this.msgs[start].i : ''
+      const msgs = this.msgs.slice(this.start, end)
+      const head = this.headKey()
+      const tail = this.back ? 'newer ' + this.back : 'reply'
+      const sigs = msgs.map((m) => JSON.stringify(m))
+      let from = 0
+      if (head === this.head) {
+        if (head.indexOf('list') !== 0) return // the same message
+        const drawn = this.drawn
+        while (from < drawn.length && from < sigs.length && drawn[from].sig === sigs[from]) from++
+        if (from === drawn.length && from === sigs.length && tail === this.tailKey) return // nothing changed
+        cv.truncate(from < drawn.length ? drawn[from].mark : this.tail)
+        this.drawn = drawn.slice(0, from)
+      } else {
+        cv.clear()
+        this.drawn = []
+        this.head = head
+        if (!this.drawHead()) return
       }
       const x = L.side
       const w = W - 2 * L.side
-      let y = L.top
-      if (this.more && this.msgs.length < MAX) {
-        cv.button({ x, y, w, h: px(48), text: 'Earlier messages', size: px(18), click: () => this.older() })
-        y += px(58)
+      let y = from ? this.drawn[from - 1].end : this.top
+      for (let i = from; i < msgs.length; i++) {
+        const mark = cv.mark()
+        y = this.bubble(msgs[i], y) + px(8)
+        this.drawn.push({ sig: sigs[i], mark, end: y })
       }
-      if (!this.msgs.length) {
-        cv.text({ x, y: y + px(30), w, h: px(40), text: 'No messages yet', size: px(20), color: C.sub, align: align.CENTER_H })
-        y += px(100)
-      }
-      for (const m of this.msgs) y = this.bubble(m, y) + px(8)
+      this.tail = cv.mark()
+      this.tailKey = tail
       y += px(8)
-      if (this.p.r) {
+      if (this.back) {
+        cv.button({ x, y, w, h: px(56), text: 'Newer messages (' + this.back + ')', size: px(18), click: () => this.newer() })
+        y += px(56)
+      } else if (this.p.r) {
         cv.text({ x, y, w, h: px(56), text: "You're no longer in this group", size: px(18), color: C.sub, align: align.CENTER_H, wrap: true })
         y += px(56)
       } else {
@@ -271,7 +350,41 @@ Page(
       }
       cv.rect(0, y, W, L.bottom, C.bg) // room to scroll clear of the edge
       y += L.bottom
-      if (toBottom && y > H) scrollTo({ y: -(y - H) })
+      this.height = y
+      if (toBottom && !this.back && y > H) scrollTo({ y: -(y - H) })
+    },
+
+    // drawHead draws the title and what goes above the messages, and says
+    // whether messages follow; this.top is where they start.
+    drawHead() {
+      const cv = this.cv
+      cv.title(this.p.n || 'Chat')
+      if (this.loading) {
+        cv.text({ x: 0, y: Math.floor(H / 2) - px(20), w: W, h: px(40), text: 'Loading…', size: px(22), color: C.sub, align: align.CENTER_H })
+        return false
+      }
+      if (this.err && !this.msgs.length) {
+        const v = errorView(this.err.code, this.err.msg)
+        cv.message({ title: v.title, titleColor: C.warn, body: v.body, action: 'Try again', click: () => {
+          this.loading = true
+          this.render(false)
+          this.load()
+        } })
+        return false
+      }
+      const x = L.side
+      const w = W - 2 * L.side
+      let y = L.top
+      if (this.earlier()) {
+        cv.button({ x, y, w, h: px(48), text: 'Earlier messages', size: px(18), click: () => this.older() })
+        y += px(58)
+      }
+      if (!this.msgs.length) {
+        cv.text({ x, y: y + px(30), w, h: px(40), text: 'No messages yet', size: px(20), color: C.sub, align: align.CENTER_H })
+        y += px(100)
+      }
+      this.top = y
+      return true
     },
 
     // bubble draws a message from y and returns where it ends.
@@ -311,7 +424,10 @@ Page(
       parts.push(cv.text({ x: bx + pad, y: ty, w: innerW, h: bodyH + px(4), text: m.x, size, wrap: true, valign: align.TOP }))
       ty += bodyH + px(2)
       const metaColor = mine ? C.mineMeta : C.dim
-      if (tick) {
+      if (tick && m.k !== 'r') {
+        // One widget fewer when the tick is the time's color.
+        cv.text({ x: bx + pad, y: ty, w: innerW, h: px(22), text: meta + ' ' + tick, size: px(14), color: metaColor, align: align.RIGHT })
+      } else if (tick) {
         const tickW = textWidth(tick, px(14))
         cv.text({ x: bx + bw - pad - tickW, y: ty, w: tickW, h: px(22), text: tick, size: px(14), color: m.k === 'r' ? C.read : metaColor, align: align.RIGHT })
         cv.text({ x: bx + pad, y: ty, w: innerW - tickW - px(6), h: px(22), text: meta, size: px(14), color: metaColor, align: align.RIGHT })

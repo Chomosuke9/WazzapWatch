@@ -15,7 +15,7 @@ import { align, prop, widget } from '@zos/ui'
 import { px } from '@zos/utils'
 import { upsertChat } from '../../shared/convert'
 import { ask, failed, reason } from '../../utils/ask'
-import { Loader } from '../../utils/avatars'
+import { Loader, moreComing } from '../../utils/avatars'
 import { BUTTON_ROW, chatRow, chatRows, listData } from '../../utils/chatrows'
 import { poll } from '../../utils/poll'
 import { C, Canvas, H, L, W, errorView } from '../../utils/ui'
@@ -47,8 +47,12 @@ Page(
       this.shown = '' // which layout the canvas holds, see layout()
       this.timers = {}
       this.gone = false
-      // A picture arriving redraws the list, a few at once.
-      this.avatars = new Loader(this, () => this.later('avatars', 400, () => this.render()))
+      // A picture arriving redraws the list. Every redraw is a hitch, so
+      // while more are coming they go in together, every few seconds.
+      this.avatars = new Loader(this, () => {
+        if (!moreComing()) this.later('avatars', 400, () => this.render())
+        else if (!this.timers.avatars) this.later('avatars', 3000, () => this.render())
+      })
     },
 
     build() {
@@ -176,8 +180,11 @@ Page(
 
     open(c) {
       if (c.u) {
-        c.u = 0 // opening it reads it
-        this.render()
+        // Opening it reads it. The page is made again on the way back, from
+        // storage (onDestroy writes it), so the list isn't drawn again now,
+        // in the way of the page sliding in.
+        c.u = 0
+        this.later('save', 5000, () => save('chats', this.chats.slice(0, 20)))
       }
       push({ url: 'page/chat/index.page', params: JSON.stringify({ i: c.i, n: c.n, g: c.g ? 1 : 0, r: c.r ? 1 : 0 }) })
     },
@@ -194,7 +201,13 @@ Page(
     render() {
       const shown = this.layout()
       if (shown === this.shown && this.list) {
-        this.list.setProperty(prop.UPDATE_DATA, Object.assign(this.data(), { on_page: 1 }))
+        // New data makes the list lay its rows out again, a hitch while
+        // it scrolls: leave it be when nothing it shows changed.
+        const data = this.data()
+        const sig = JSON.stringify(data)
+        if (sig === this.sig) return
+        this.sig = sig
+        this.list.setProperty(prop.UPDATE_DATA, Object.assign(data, { on_page: 1 }))
         return
       }
       const cv = this.cv
@@ -229,6 +242,8 @@ Page(
         y += px(56)
       }
       const config = chatRows(w)
+      const data = this.data()
+      this.sig = JSON.stringify(data)
       this.list = cv.add(widget.SCROLL_LIST, Object.assign({
         x, y, w, h: H - y,
         item_space: px(4),
@@ -239,7 +254,7 @@ Page(
           else if (i <= this.chats.length) this.open(this.chats[i - 1])
           else this.loadMore()
         },
-      }, this.data()))
+      }, data))
     },
 
     // data is the list's rows: Search, the chats, and Load more.

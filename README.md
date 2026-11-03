@@ -15,7 +15,8 @@ watch (page/)  ⇄ Bluetooth ⇄  Zepp app on the phone (app-side/)  ⇄ HTTP ov
 ```
 
 - `page/home` lists the chats, `page/chat` shows a conversation (15 messages
-  at a time, at most 45), `page/reply` types, speaks or picks a quick reply,
+  at a time, at most 45, 30 on the page at once so it scrolls smoothly),
+  `page/reply` types, speaks or picks a quick reply,
   `page/search` finds chats by name and messages by text, `page/photo`
   shows a message's photo or sticker, loaded only when it's opened, and
   `page/msg` (a message tapped twice) reacts to it or replies to it. Reactions show

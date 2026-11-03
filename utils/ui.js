@@ -63,7 +63,8 @@ export function initial(name) {
   return ch.toUpperCase()
 }
 
-// Canvas makes widgets and deletes them all at once.
+// Canvas makes widgets and deletes them all at once, or the ones made
+// since a mark, so a page can draw again only what changed.
 export class Canvas {
   constructor() {
     this.widgets = []
@@ -76,8 +77,18 @@ export class Canvas {
   }
 
   clear() {
-    for (const w of this.widgets) deleteWidget(w)
-    this.widgets = []
+    this.truncate(0)
+  }
+
+  // mark is where the next widget goes, for truncate.
+  mark() {
+    return this.widgets.length
+  }
+
+  // truncate deletes the widgets made since mark n, the newest first.
+  truncate(n) {
+    for (let i = this.widgets.length - 1; i >= n; i--) deleteWidget(this.widgets[i])
+    this.widgets.length = Math.min(n, this.widgets.length)
   }
 
   text(o) {
@@ -148,17 +159,32 @@ export class Canvas {
   }
 }
 
+// Text layouts are slow to work out and a chat asks for the same ones
+// (times, ticks, the same messages) on every draw, so they're kept.
+const layouts = new Map()
+
+function layout(text, size, w, wrapped) {
+  const k = size + ' ' + w + ' ' + wrapped + ' ' + text
+  let l = layouts.get(k)
+  if (!l) {
+    if (layouts.size >= 500) layouts.clear()
+    const r = getTextLayout(text, { text_size: size, text_width: w, wrapped })
+    l = { w: Math.ceil(r.width), h: Math.ceil(r.height) }
+    layouts.set(k, l)
+  }
+  return l
+}
+
 // measure is how tall text is when it wraps at width w.
 export function measure(text, size, w) {
   if (!text) return 0
-  const l = getTextLayout(text, { text_size: size, text_width: w, wrapped: 1 })
-  return Math.ceil(l.height)
+  return layout(text, size, w, 1).h
 }
 
 // textWidth is how wide text is on one line.
 export function textWidth(text, size) {
   if (!text) return 0
-  return Math.ceil(getTextLayout(text, { text_size: size, text_width: W * 4, wrapped: 0 }).width)
+  return layout(text, size, W * 4, 0).w
 }
 
 // ERRORS words the side service's errors (app-side/index.js).

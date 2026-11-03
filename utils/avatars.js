@@ -65,23 +65,38 @@ function state() {
   return g.avatars
 }
 
+// save writes the entries to storage a while later, many changes at once:
+// writing flash stalls the screen. A page leaving writes them at once
+// (Loader's stop).
 function save() {
   const st = state()
   if (st.saveTimer) return
-  st.saveTimer = setTimeout(() => {
-    st.saveTimer = null
-    const cache = st.cache
-    const ids = Object.keys(cache)
-    if (ids.length > KEEP) {
-      // Forget the ones checked longest ago.
-      ids.sort((a, b) => cache[a].t - cache[b].t)
-      for (const id of ids.slice(0, ids.length - KEEP)) {
-        remove(cache[id].p)
-        delete cache[id]
-      }
+  st.saveTimer = setTimeout(write, 20000)
+}
+
+function write() {
+  const st = state()
+  if (st.saveTimer) clearTimeout(st.saveTimer)
+  st.saveTimer = null
+  const cache = st.cache
+  const ids = Object.keys(cache)
+  if (ids.length > KEEP) {
+    // Forget the ones checked longest ago.
+    ids.sort((a, b) => cache[a].t - cache[b].t)
+    for (const id of ids.slice(0, ids.length - KEEP)) {
+      remove(cache[id].p)
+      delete cache[id]
     }
-    localStorage.setItem('avatars2', JSON.stringify(cache))
-  }, 3000)
+  }
+  localStorage.setItem('avatars2', JSON.stringify(cache))
+}
+
+// moreComing says whether pictures are still to be asked for now, so a
+// page can show the ones that came together with the next.
+export function moreComing() {
+  const st = state()
+  const now = Date.now()
+  return st.queue.some((id) => !(st.later[id] > now))
 }
 
 // avatarPath is the picture to show for a chat, or '' for its initial.
@@ -209,6 +224,8 @@ export class Loader {
     const st = state()
     st.watchers.delete(this.changed)
     st.pages = st.pages.filter((p) => p !== this.page)
+    // The page's timers may go with it.
+    if (st.saveTimer) write()
   }
 
   // want puts the chats (IDs, the first most wanted) whose pictures are

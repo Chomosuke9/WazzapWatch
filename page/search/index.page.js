@@ -6,7 +6,7 @@ import { push } from '@zos/router'
 import { align, prop, widget } from '@zos/ui'
 import { px } from '@zos/utils'
 import { ask, reason } from '../../utils/ask'
-import { Loader } from '../../utils/avatars'
+import { Loader, moreComing } from '../../utils/avatars'
 import { BUTTON_ROW, FOUND, HEADING, chatRow, chatRows, listData } from '../../utils/chatrows'
 import { openKeyboard } from '../../utils/keyboard'
 import { C, Canvas, H, L, W, errorView } from '../../utils/ui'
@@ -24,10 +24,27 @@ Page(
       this.gone = false
       this.targets = [] // what each row of the list opens
       this.list = null
-      // A picture arriving updates the results' rows, keeping their place.
+      // A picture arriving updates the results' rows, keeping their place,
+      // when it's one of theirs. Every update is a hitch, so while more
+      // are coming they go in together, every few seconds.
+      this.timer = null
       this.avatars = new Loader(this, () => {
-        if (this.list) this.list.setProperty(prop.UPDATE_DATA, Object.assign(this.results(), { on_page: 1 }))
+        if (this.timer && !moreComing()) {
+          clearTimeout(this.timer)
+          this.timer = null
+        }
+        if (!this.timer) this.timer = setTimeout(() => this.pictures(), moreComing() ? 3000 : 400)
       })
+    },
+
+    pictures() {
+      this.timer = null
+      if (this.gone || !this.list) return
+      const data = this.results()
+      const sig = JSON.stringify(data)
+      if (sig === this.sig) return
+      this.sig = sig
+      this.list.setProperty(prop.UPDATE_DATA, Object.assign(data, { on_page: 1 }))
     },
 
     build() {
@@ -36,6 +53,7 @@ Page(
 
     onDestroy() {
       this.gone = true
+      if (this.timer) clearTimeout(this.timer)
       this.avatars.stop()
     },
 
@@ -109,6 +127,7 @@ Page(
         return
       }
       const config = chatRows(w)
+      this.sig = JSON.stringify(data)
       this.list = cv.add(widget.SCROLL_LIST, Object.assign({
         x, y, w, h: H - y,
         item_space: px(4),
