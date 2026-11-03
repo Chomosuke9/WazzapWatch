@@ -1,7 +1,7 @@
 {
   "configVersion": "v3",
   "app": {
-    "appId": 1000088,
+    "appId": 1134617,
     "appName": "Wazzap",
     "appType": "app",
     "version": {
@@ -12,7 +12,7 @@
     "vender": "wazzapclients",
     "description": "Your WhatsApp chats, through WazzapClients on your computer"
   },
-  "permissions": ["data:os.device.info"],
+  "permissions": ["data:os.device.info", "device:os.local_storage"],
   "runtime": {
     "apiVersion": {
       "compatible": "4.0",
@@ -28,7 +28,10 @@
           "pages": [
             "page/home/index.page",
             "page/chat/index.page",
-            "page/reply/index.page"
+            "page/reply/index.page",
+            "page/search/index.page",
+            "page/photo/index.page",
+            "page/msg/index.page"
           ]
         },
         "app-side": {

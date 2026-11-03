@@ -44,12 +44,18 @@ export const C = {
   warn: 0xf2b45a,
 }
 
-// avatarColor gives a chat a color of its own from its ID.
+// avatarColor gives a chat a color of its own from its ID, for names in a
+// group. The chat list's avatars are pictures, assets/*/av/<avatarIndex>.png,
+// of the same hues made deep enough for a white initial.
 const AVATARS = [0xf2b45a, 0x7fa7f5, 0xc58af0, 0x5cc8d6, 0xe88b8b, 0x9ad07a, 0xff9f7a, 0xf5a3c7]
-export function avatarColor(id) {
+export function avatarIndex(id) {
   let h = 0
   for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) | 0
-  return AVATARS[Math.abs(h) % AVATARS.length]
+  return Math.abs(h) % AVATARS.length
+}
+
+export function avatarColor(id) {
+  return AVATARS[avatarIndex(id)]
 }
 
 export function initial(name) {
@@ -157,15 +163,20 @@ export function textWidth(text, size) {
 
 // ERRORS words the side service's errors (app-side/index.js).
 export const ERRORS = {
-  setup: { title: 'Belum diatur', body: 'Buka Wazzap di aplikasi Zepp, lalu isi alamat server dan token dari WazzapClients.' },
-  offline: { title: 'Tidak terhubung', body: 'Nyalakan WazzapClients di komputer, aktifkan Smartwatch di Extra features, dan pastikan HP terhubung ke Tailscale.' },
-  token: { title: 'Token salah', body: 'Salin token dari WazzapClients ke pengaturan Wazzap di aplikasi Zepp.' },
-  whatsapp: { title: 'WhatsApp belum tersambung', body: 'WazzapClients di komputer belum terhubung ke WhatsApp.' },
-  phone: { title: 'HP tidak terjangkau', body: 'Pastikan jam terhubung ke HP dan aplikasi Zepp berjalan.' },
-  server: { title: 'Terjadi masalah', body: 'Server menolak permintaan.' },
+  setup: { title: 'Not set up', body: 'Open Wazzap in the Zepp app, then enter the server address and token from WazzapClients.' },
+  offline: { title: "Can't reach computer", body: 'Run WazzapClients on your computer, turn on Smartwatch access in Extra features, and connect your phone to Tailscale.' },
+  token: { title: 'Wrong token', body: 'Copy the token from WazzapClients into the Wazzap settings in the Zepp app.' },
+  whatsapp: { title: 'WhatsApp offline', body: "WazzapClients on your computer isn't connected to WhatsApp." },
+  phone: { title: "Can't reach phone", body: 'Make sure the watch is connected to your phone and the Zepp app is running.' },
+  server: { title: 'Something went wrong', body: 'The server turned the request down.' },
+  bug: { title: 'Watch app error', body: 'Something went wrong in this app.' },
 }
 
+// errorView words an error. msg is the server's message, or why the phone
+// couldn't be reached, or the page's own error.
 export function errorView(code, msg) {
   const e = ERRORS[code] || ERRORS.server
-  return { title: e.title, body: code === 'server' && msg ? msg : e.body }
+  if (!msg) return { title: e.title, body: e.body, short: e.title }
+  if (code === 'server') return { title: e.title, body: msg, short: e.title }
+  return { title: e.title, body: e.body + ' (' + msg + ')', short: e.title + ': ' + msg }
 }

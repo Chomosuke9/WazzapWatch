@@ -1,17 +1,24 @@
 // The chat list: the latest 20 chats, then more on request. It shows the
 // list kept from last time at once, asks the computer for the current one,
 // and follows changes while it's open.
+//
+// The rows are a SCROLL_LIST, the system's own list: it draws only the rows
+// on screen, and a change hands it new data instead of making every row's
+// widgets again (seven each, which made the watch stutter whenever a
+// message came). A Search row comes first. Profile pictures load one at a
+// time after the list shows (utils/avatars.js).
 
 import { BasePage } from '@zeppos/zml/base-page'
 import { push } from '@zos/router'
 import { localStorage } from '@zos/storage'
-import { align } from '@zos/ui'
+import { align, prop, widget } from '@zos/ui'
 import { px } from '@zos/utils'
 import { upsertChat } from '../../shared/convert'
+import { ask, failed, reason } from '../../utils/ask'
+import { Loader } from '../../utils/avatars'
+import { BUTTON_ROW, chatRow, chatRows, listData } from '../../utils/chatrows'
 import { poll } from '../../utils/poll'
-import { C, Canvas, H, L, W, avatarColor, errorView, initial, textWidth } from '../../utils/ui'
-
-const ROW = px(86)
+import { C, Canvas, H, L, W, errorView } from '../../utils/ui'
 
 function load(key) {
   try {
@@ -36,22 +43,42 @@ Page(
       const prefs = load('prefs')
       this.hide = !!(prefs && prefs.hide)
       this.stop = null
+      this.list = null
+      this.shown = '' // which layout the canvas holds, see layout()
+      this.timers = {}
+      this.gone = false
+      // A picture arriving redraws the list, a few at once.
+      this.avatars = new Loader(this, () => this.later('avatars', 400, () => this.render()))
     },
 
     build() {
       this.render()
+      this.avatars.want(this.chats.map((c) => c.i)) // the list kept from last time
       this.loadPrefs()
       this.refresh()
     },
 
     onDestroy() {
+      this.gone = true
+      this.avatars.stop()
       if (this.stop) this.stop()
+      for (const k in this.timers) clearTimeout(this.timers[k])
+      if (this.timers.save) save('chats', this.chats.slice(0, 20))
+    },
+
+    // later runs f in ms, once: asking again replaces the earlier one.
+    later(name, ms, f) {
+      if (this.timers[name]) clearTimeout(this.timers[name])
+      this.timers[name] = setTimeout(() => {
+        delete this.timers[name]
+        if (!this.gone) f()
+      }, ms)
     },
 
     // loadPrefs reads the settings made in the Zepp app; the reply page
     // reads them from storage too.
     loadPrefs() {
-      this.request({ method: 'prefs', params: {} })
+      ask(this, 'prefs')
         .then((d) => {
           if (!d.ok) return
           save('prefs', { quick: d.quick, confirm: d.confirm, hide: d.hide })
@@ -64,28 +91,41 @@ Page(
     },
 
     refresh() {
-      this.request({ method: 'chats', params: {} })
-        .then((d) => {
+      ask(this, 'chats').then(
+        (d) => {
+          if (this.gone) return
           if (d.err) {
             this.fail(d.err, d.msg)
             return
           }
-          this.err = null
-          this.loading = false
-          this.chats = d.c
-          this.more = !!d.more
-          save('chats', this.chats)
-          this.render()
-          if (this.stop) this.stop()
-          this.stop = poll(this, d.k, (evs) => this.apply(evs), () => this.refresh())
-        })
-        .catch(() => this.fail('phone'))
+          try {
+            this.err = null
+            this.loading = false
+            this.chats = d.c
+            this.more = !!d.more
+            save('chats', this.chats)
+            this.render()
+            this.avatars.want(this.chats.map((c) => c.i))
+            if (this.stop) this.stop()
+            this.stop = poll(this, d.k, (evs) => this.apply(evs), () => this.refresh())
+          } catch (e) {
+            this.fail('bug', failed('chats', e))
+          }
+        },
+        (e) => this.fail('phone', reason(e)),
+      )
     },
 
     fail(code, msg) {
+      if (this.gone) return
       this.loading = false
       this.err = { code, msg }
       this.render()
+      // The phone or the computer coming back is the usual end of it:
+      // look again without waiting for a tap.
+      if (code === 'phone' || code === 'offline' || code === 'whatsapp') {
+        this.later('retry', 15000, () => this.refresh())
+      }
     },
 
     retry() {
@@ -98,13 +138,15 @@ Page(
     loadMore() {
       const last = this.chats[this.chats.length - 1]
       if (!last) return
-      this.request({ method: 'chats', params: { after: last.i } })
+      ask(this, 'chats', { after: last.i })
         .then((d) => {
           if (d.err) return
           const have = new Set(this.chats.map((c) => c.i))
-          this.chats = this.chats.concat(d.c.filter((c) => !have.has(c.i)))
+          const added = d.c.filter((c) => !have.has(c.i))
+          this.chats = this.chats.concat(added)
           this.more = !!d.more
           this.render()
+          this.avatars.want(added.map((c) => c.i))
         })
         .catch(() => {})
     },
@@ -121,9 +163,15 @@ Page(
         }
       }
       if (changed) {
-        save('chats', this.chats.slice(0, 20))
         this.render()
+        this.avatars.want(this.chats.slice(0, 20).map((c) => c.i))
+        // Storage is flash: write it once things calm down.
+        this.later('save', 5000, () => save('chats', this.chats.slice(0, 20)))
       }
+    },
+
+    search() {
+      push({ url: 'page/search/index.page' })
     },
 
     open(c) {
@@ -134,76 +182,80 @@ Page(
       push({ url: 'page/chat/index.page', params: JSON.stringify({ i: c.i, n: c.n, g: c.g ? 1 : 0, r: c.r ? 1 : 0 }) })
     },
 
+    // layout is what the page shows: a message, or the list (under an
+    // error bar when the list is an old one).
+    layout() {
+      if (this.loading) return 'loading'
+      if (this.err && !this.chats.length) return 'error'
+      if (!this.chats.length) return 'empty'
+      return this.err ? 'list-error ' + this.err.code : 'list'
+    },
+
     render() {
+      const shown = this.layout()
+      if (shown === this.shown && this.list) {
+        this.list.setProperty(prop.UPDATE_DATA, Object.assign(this.data(), { on_page: 1 }))
+        return
+      }
       const cv = this.cv
       cv.clear()
-      cv.title('Chat')
-      if (this.loading) {
-        cv.text({ x: 0, y: Math.floor(H / 2) - px(20), w: W, h: px(40), text: 'Memuat…', size: px(22), color: C.sub, align: align.CENTER_H })
-        return
-      }
-      if (this.err && !this.chats.length) {
-        const v = errorView(this.err.code, this.err.msg)
-        cv.message({ title: v.title, titleColor: C.warn, body: v.body, action: 'Coba lagi', click: () => this.retry() })
-        return
-      }
+      this.list = null
+      this.shown = shown
+      cv.title('Chats')
       const x = L.side
       const w = W - 2 * L.side
+      if (shown === 'loading') {
+        cv.text({ x: 0, y: Math.floor(H / 2) - px(20), w: W, h: px(40), text: 'Loading…', size: px(22), color: C.sub, align: align.CENTER_H })
+        return
+      }
+      if (shown === 'error') {
+        const v = errorView(this.err.code, this.err.msg)
+        cv.message({ title: v.title, titleColor: C.warn, body: v.body, action: 'Try again', click: () => this.retry() })
+        return
+      }
+      if (shown === 'empty') {
+        cv.text({ x, y: L.top + px(40), w, h: px(40), text: 'No chats yet', size: px(20), color: C.sub, align: align.CENTER_H })
+        return
+      }
       let y = L.top
       if (this.err) {
         // The list kept from last time, under a bar that says why it's old.
         cv.button({
           x, y, w, h: px(48), radius: px(14),
-          text: errorView(this.err.code).title + ' · coba lagi',
-          size: px(17), color: 0x3a2e14, down: 0x4a3b1a, textColor: C.warn,
+          text: errorView(this.err.code, this.err.msg).short,
+          size: px(15), color: 0x3a2e14, down: 0x4a3b1a, textColor: C.warn,
           click: () => this.retry(),
         })
         y += px(56)
       }
-      if (!this.chats.length) {
-        cv.text({ x, y: y + px(40), w, h: px(40), text: 'Belum ada chat', size: px(20), color: C.sub, align: align.CENTER_H })
-      }
-      for (const c of this.chats) {
-        this.row(c, y)
-        y += ROW
-      }
-      if (this.more) {
-        y += px(10)
-        cv.button({ x, y, w, h: px(52), text: 'Muat lagi', size: px(19), click: () => this.loadMore() })
-        y += px(52)
-      }
-      cv.rect(0, y, W, L.bottom, C.bg) // room to scroll the last row clear of the edge
+      const config = chatRows(w)
+      this.list = cv.add(widget.SCROLL_LIST, Object.assign({
+        x, y, w, h: H - y,
+        item_space: px(4),
+        item_config: config,
+        item_config_count: config.length,
+        item_click_func: (_, i) => {
+          if (i === 0) this.search()
+          else if (i <= this.chats.length) this.open(this.chats[i - 1])
+          else this.loadMore()
+        },
+      }, this.data()))
     },
 
-    row(c, y) {
-      const cv = this.cv
-      const x = L.side
-      const w = W - 2 * L.side
-      cv.button({ x, y, w, h: ROW, radius: px(16), color: C.bg, down: C.card, click: () => this.open(c) })
-      const r = px(29)
-      const cy = y + Math.floor(ROW / 2)
-      cv.circle(x + r, cy, r, avatarColor(c.i))
-      cv.text({ x, y: cy - r, w: 2 * r, h: 2 * r, text: initial(c.n), size: px(25), color: C.onAccent, align: align.CENTER_H })
-      const tx = x + 2 * r + px(14)
-      const tw = x + w - tx
-      const timeW = px(84)
-      const unread = c.u && !c.m
-      cv.text({ x: tx, y: y + px(10), w: tw - timeW - px(6), h: px(34), text: c.n, size: px(23) })
-      cv.text({ x: x + w - timeW, y: y + px(13), w: timeW, h: px(28), text: c.t, size: px(16), color: unread ? C.accent : C.dim, align: align.RIGHT })
-      let pw = tw
-      if (c.u) {
-        const label = c.u > 99 ? '99+' : String(c.u)
-        const bw = Math.max(px(30), textWidth(label, px(16)) + px(16))
-        const bx = x + w - bw
-        const by = y + px(47)
-        cv.rect(bx, by, bw, px(30), c.m ? C.muted : C.accent, px(15))
-        cv.text({ x: bx, y: by, w: bw, h: px(30), text: label, size: px(16), color: c.m ? 0xffffff : C.onAccent, align: align.CENTER_H })
-        pw -= bw + px(8)
+    // data is the list's rows: Search, the chats, and Load more.
+    data() {
+      const rows = [{ n: 'Search chats and messages' }]
+      const kinds = [BUTTON_ROW]
+      for (const c of this.chats) {
+        const r = chatRow(c, this.hide)
+        rows.push(r.row)
+        kinds.push(r.kind)
       }
-      if (!this.hide && c.v) {
-        cv.text({ x: tx, y: y + px(46), w: pw, h: px(32), text: c.v, size: px(19), color: C.sub })
+      if (this.more) {
+        rows.push({ n: 'Load more' })
+        kinds.push(BUTTON_ROW)
       }
-      cv.rect(tx, y + ROW - 1, x + w - tx, 1, C.line)
+      return listData(rows, kinds)
     },
   }),
 )

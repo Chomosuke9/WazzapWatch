@@ -2,6 +2,8 @@
 // quick reply. Typed and spoken text is shown before it goes, unless the
 // Zepp app's settings say not to; quick replies go at once. Once sent, the
 // page goes back to the chat, which gets the message through its events.
+// Opened from a message (page/msg) it answers that message: q is its ID,
+// qs who sent it and qx its text, shown on top.
 
 import { BasePage } from '@zeppos/zml/base-page'
 import { showToast } from '@zos/interaction'
@@ -10,6 +12,8 @@ import { localStorage } from '@zos/storage'
 import { align, createKeyboard, deleteKeyboard, inputType } from '@zos/ui'
 import { px } from '@zos/utils'
 import { DEFAULT_QUICK } from '../../shared/convert'
+import { ask, reason } from '../../utils/ask'
+import { added } from '../../utils/msgcache'
 import { nonce } from '../../utils/poll'
 import { C, Canvas, H, L, W, errorView, measure } from '../../utils/ui'
 
@@ -37,9 +41,13 @@ Page(
       this.sent = { text: '', nonce: '' } // the nonce goes with the text it was made for
     },
 
+    onDestroy() {
+      this.gone = true
+    },
+
     build() {
       this.render()
-      this.request({ method: 'prefs', params: {} })
+      ask(this, 'prefs')
         .then((d) => {
           if (!d.ok) return
           this.prefs = { quick: d.quick, confirm: d.confirm, hide: d.hide }
@@ -80,22 +88,39 @@ Page(
       const was = this.mode
       this.mode = 'sending'
       this.render()
-      this.request({ method: 'send', params: { chat: this.p.i, text, nonce: this.sent.nonce } })
+      ask(this, 'send', { chat: this.p.i, text, replyTo: this.p.q || '', nonce: this.sent.nonce })
         .then((d) => {
+          if (this.gone) return
           if (d.err) {
-            showToast({ content: errorView(d.err, d.msg).title })
+            showToast({ content: errorView(d.err, d.msg).short })
             this.mode = was
             this.render()
             return
           }
-          showToast({ content: 'Terkirim' })
+          added(this.p.i, d.m) // the chat shows it as it opens again
+          showToast({ content: 'Sent' })
           back()
         })
-        .catch(() => {
-          showToast({ content: errorView('phone').title })
+        .catch((e) => {
+          if (this.gone) return
+          showToast({ content: errorView('phone', reason(e)).short })
           this.mode = was
           this.render()
         })
+    },
+
+    // quote draws the message being answered, when there's one, at y and
+    // returns where what follows goes.
+    quote(y) {
+      if (!this.p.q) return y
+      const x = L.side
+      const w = W - 2 * L.side
+      const cv = this.cv
+      cv.rect(x, y, w, px(62), C.card, px(14))
+      cv.rect(x + px(10), y + px(10), px(4), px(42), C.accent, px(2))
+      cv.text({ x: x + px(24), y: y + px(4), w: w - px(36), h: px(28), text: this.p.qs || 'Message', size: px(16), color: C.accent })
+      cv.text({ x: x + px(24), y: y + px(30), w: w - px(36), h: px(28), text: this.p.qx || '', size: px(17), color: C.sub })
+      return y + px(74)
     },
 
     render() {
@@ -104,37 +129,37 @@ Page(
       const x = L.side
       const w = W - 2 * L.side
       if (this.mode === 'sending') {
-        cv.title('Balas')
-        cv.text({ x: 0, y: Math.floor(H / 2) - px(20), w: W, h: px(40), text: 'Mengirim…', size: px(22), color: C.sub, align: align.CENTER_H })
+        cv.title('Reply')
+        cv.text({ x: 0, y: Math.floor(H / 2) - px(20), w: W, h: px(40), text: 'Sending…', size: px(22), color: C.sub, align: align.CENTER_H })
         return
       }
       if (this.mode === 'confirm') {
-        cv.title('Kirim ke ' + (this.p.n || '') + '?')
-        let y = L.top + px(8)
+        cv.title('Send to ' + (this.p.n || '') + '?')
+        let y = this.quote(L.top + px(8))
         const pad = px(18)
         const size = px(24)
         const th = Math.min(measure(this.draft, size, w - 2 * pad), H - y - px(200))
         const bh = th + px(36) + 2 * pad
         cv.rect(x, y, w, bh, C.card, px(24))
         cv.text({ x: x + pad, y: y + pad, w: w - 2 * pad, h: th + px(4), text: this.draft, size, wrap: true, valign: align.TOP })
-        cv.text({ x: x + pad, y: y + pad + th + px(8), w: w - 2 * pad, h: px(26), text: this.via === 'voice' ? 'Dari suara' : 'Dari keyboard', size: px(16), color: C.dim })
+        cv.text({ x: x + pad, y: y + pad + th + px(8), w: w - 2 * pad, h: px(26), text: this.via === 'voice' ? 'From voice' : 'From keyboard', size: px(16), color: C.dim })
         y += bh + px(18)
         const half = Math.floor((w - px(12)) / 2)
-        cv.button({ x, y, w: half, h: px(60), text: 'Ubah', size: px(21), click: () => {
+        cv.button({ x, y, w: half, h: px(60), text: 'Edit', size: px(21), click: () => {
           this.mode = 'menu'
           this.render()
           this.keyboard(this.via === 'voice', this.via === 'voice' ? '' : this.draft)
         } })
-        cv.button({ x: x + half + px(12), y, w: half, h: px(60), text: 'Kirim', size: px(21), color: C.accent, down: C.accentDown, textColor: C.onAccent, click: () => this.send(this.draft) })
+        cv.button({ x: x + half + px(12), y, w: half, h: px(60), text: 'Send', size: px(21), color: C.accent, down: C.accentDown, textColor: C.onAccent, click: () => this.send(this.draft) })
         y += px(60)
         cv.rect(0, y, W, L.bottom, C.bg)
         return
       }
-      cv.title('Balas ' + (this.p.n || ''))
-      let y = L.top + px(4)
+      cv.title('Reply to ' + (this.p.n || ''))
+      let y = this.quote(L.top + px(4))
       const half = Math.floor((w - px(12)) / 2)
-      cv.button({ x, y, w: half, h: px(92), radius: px(24), text: 'Ketik', size: px(21), click: () => this.keyboard(false) })
-      cv.button({ x: x + half + px(12), y, w: half, h: px(92), radius: px(24), text: 'Suara', size: px(21), click: () => this.keyboard(true) })
+      cv.button({ x, y, w: half, h: px(92), radius: px(24), text: 'Type', size: px(21), click: () => this.keyboard(false) })
+      cv.button({ x: x + half + px(12), y, w: half, h: px(92), radius: px(24), text: 'Voice', size: px(21), click: () => this.keyboard(true) })
       y += px(92) + px(16)
       for (const q of this.prefs.quick || DEFAULT_QUICK) {
         cv.button({ x, y, w, h: px(60), text: q, size: px(21), color: 0x1a1e20, click: () => this.send(q) })

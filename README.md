@@ -15,8 +15,19 @@ watch (page/)  ⇄ Bluetooth ⇄  Zepp app on the phone (app-side/)  ⇄ HTTP ov
 ```
 
 - `page/home` lists the chats, `page/chat` shows a conversation (15 messages
-  at a time, at most 45), `page/reply` types, speaks or picks a quick reply.
+  at a time, at most 45), `page/reply` types, speaks or picks a quick reply,
+  `page/search` finds chats by name and messages by text, `page/photo`
+  shows a message's photo or sticker, loaded only when it's opened, and
+  `page/msg` (a message tapped twice) reacts to it or replies to it. Reactions show
+  as pictures of WhatsApp's six (Noto Emoji, `LICENSES/noto-emoji.txt`),
+  since the watch's font may not draw emoji.
   Each page follows changes while it's open (`utils/poll.js`, a long poll).
+- Pictures come to the watch as files: the computer sends a small PNG, the
+  side service converts it to the watch's format and sends it over Bluetooth,
+  and `app.js` hands it to `utils/files.js`. Profile pictures load one at a
+  time as the list shows chats and are kept on the watch (`utils/avatars.js`).
+  zeus bundles each page apart, with its own copy of every module, so what
+  pages share lives in the app's `globalData`.
 - `app-side/index.js` runs in the Zepp app: it calls the computer and answers
   the watch with the short objects of `shared/convert.js`, labels and times
   already worded, since Bluetooth is slow.
@@ -37,7 +48,8 @@ zeus login                # your Zepp developer account
 zeus preview              # a QR code for the Zepp app (Profile › Settings › Developer mode)
 ```
 
-`app.json`'s `appId` is a placeholder: create an app in the
+`app.json`'s `appId` belongs to the maintainer's Zepp account. To install a
+build of your own, create an app in the
 [Zepp developer console](https://console.zepp.com) and put its ID there before
 `zeus preview`.
 
@@ -47,7 +59,7 @@ zeus preview              # a QR code for the Zepp app (Profile › Settings ›
    (the computer's Tailscale address, port 8642) and the token.
 2. Install Tailscale on the phone and sign in to the same tailnet.
 3. In the Zepp app, open Wazzap's settings, paste both and press
-   **Tes koneksi**.
+   **Test connection**.
 
 ## Development
 
