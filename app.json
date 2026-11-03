@@ -1,0 +1,50 @@
+{
+  "configVersion": "v3",
+  "app": {
+    "appId": 1000088,
+    "appName": "Wazzap",
+    "appType": "app",
+    "version": {
+      "code": 1,
+      "name": "0.1.0"
+    },
+    "icon": "icon.png",
+    "vender": "wazzapclients",
+    "description": "Your WhatsApp chats, through WazzapClients on your computer"
+  },
+  "permissions": ["data:os.device.info"],
+  "runtime": {
+    "apiVersion": {
+      "compatible": "4.0",
+      "target": "4.0",
+      "minVersion": "4.0"
+    }
+  },
+  "debug": false,
+  "targets": {
+    "common": {
+      "module": {
+        "page": {
+          "pages": [
+            "page/home/index.page",
+            "page/chat/index.page",
+            "page/reply/index.page"
+          ]
+        },
+        "app-side": {
+          "path": "app-side/index"
+        },
+        "setting": {
+          "path": "setting/index"
+        }
+      },
+      "platforms": [{ "st": "s" }, { "st": "r" }],
+      "designWidth": 432
+    }
+  },
+  "i18n": {
+    "en-US": { "appName": "Wazzap" },
+    "id-ID": { "appName": "Wazzap" }
+  },
+  "defaultLanguage": "en-US"
+}
